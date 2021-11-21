@@ -164,7 +164,6 @@ static Domain *GetRequestDomain(Request *_req)
 Domain::Domain():
 	fQueue(NULL),
 	fQueueEnd(NULL),
-	fSubrequests(NULL),
 	fExiting(false)
 {
 	Trace("+Domain(%p)\n", this);
@@ -358,7 +357,8 @@ void Domain::BeginSync()
 		}
 		req = new SyncRequest(rootDom, this);
 		if (!isRootDom) {
-			req->nextSub = rootDom->fSubrequests; rootDom->fSubrequests = req;
+			Request *rootReq = rootDom->RootRequest();
+			req->nextSub = rootReq->nextSub; rootReq->nextSub = req;
 		}
 		// Trace("BeginSync: "); WriteSubrequests(rootReq);
 		Schedule(req);
@@ -371,17 +371,18 @@ void Domain::EndSync()
 	SyncRequest *req = dynamic_cast<SyncRequest*>(fQueue);
 	Assert(req != NULL);
 	Domain *rootDom = req->fRoot;
+	Request *rootReq = RootRequest();
 	Assert(req->fRefCnt > 0);
 	req->fRefCnt--;
 	if (req->fRefCnt == 0) {
 		if (req->fDst == rootDom)
-			Assert(rootDom->fSubrequests == NULL); // can't finish root request if subrequests are still running
+			Assert(rootReq->nextSub == NULL); // can't finish root request if subrequests are still running
 		else {
 			// remove subrequest
-			Request *prev = NULL, *cur = rootDom->fSubrequests;
+			Request *prev = NULL, *cur = rootReq->nextSub;
 			while (cur != NULL && !(cur == req)) {prev = cur; cur = cur->nextSub;}
 			Assert(cur != NULL);
-			if (prev == NULL) {rootDom->fSubrequests = req->nextSub;} else {prev->nextSub = req->nextSub;}
+			if (prev == NULL) {rootReq->nextSub = req->nextSub;} else {prev->nextSub = req->nextSub;}
 			req->nextSub = NULL;
 		}
 		// Trace("EndSync: "); WriteSubrequests(rootReq);
@@ -389,33 +390,33 @@ void Domain::EndSync()
 	}
 }
 
-void Domain::BeginSubrequests()
+void Domain::BeginSubrequests(Request *rootReq)
 {
-	for (SyncRequest *cur = fSubrequests; cur != NULL; cur = cur->nextSub) {
+	for (SyncRequest *cur = rootReq->nextSub; cur != NULL; cur = cur->nextSub) {
 		cur->fDst->Schedule(cur);
 	}
 	SyncRequest *reversed = NULL;
-	while (fSubrequests != NULL) {
-		SyncRequest *cur = fSubrequests;
+	while (rootReq->nextSub != NULL) {
+		SyncRequest *cur = rootReq->nextSub;
 		cur->fSem.Acquire();
-		fSubrequests = cur->nextSub;
+		rootReq->nextSub = cur->nextSub;
 		cur->nextSub = reversed; reversed = cur;
 	}
-	fSubrequests = reversed;
+	rootReq->nextSub = reversed;
 	// Trace("Wait(3): "); WriteSubrequests(rootReq);
 }
 
-void Domain::EndSubrequests()
+void Domain::EndSubrequests(Request *rootReq)
 {
 	// Trace("Wait(1): "); WriteSubrequests(rootReq);
 	SyncRequest *reversed = NULL;
-	while (fSubrequests != NULL) {
-		SyncRequest *cur = fSubrequests;
+	while (rootReq->nextSub != NULL) {
+		SyncRequest *cur = rootReq->nextSub;
 		cur->fDst->Done(cur, waitingRequest);
-		fSubrequests = cur->nextSub;
+		rootReq->nextSub = cur->nextSub;
 		cur->nextSub = reversed; reversed = cur;
 	}
-	fSubrequests = reversed;
+	rootReq->nextSub = reversed;
 	// Trace("Wait(2): "); WriteSubrequests(rootReq);
 }
 
@@ -425,10 +426,10 @@ void Domain::Wait()
 	Request *rootReq = GetRootRequest(req);
 	Assert(rootReq != NULL);
 	Domain *rootDom = GetRequestDomain(rootReq);
-	rootDom->EndSubrequests();
+	rootDom->EndSubrequests(rootReq);
 	rootDom->Done(rootReq, waitingRequest);
 	rootReq->fSem.Acquire();
-	rootDom->BeginSubrequests();
+	rootDom->BeginSubrequests(rootReq);
 }
 
 void Domain::Yield()

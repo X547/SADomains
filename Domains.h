@@ -60,14 +60,13 @@ class Domain: public BReferenceable
 private:
 	RecursiveLock fLocker;
 	Request *fQueue, *fQueueEnd;
-	SyncRequest *fSubrequests;
 	bool fExiting;
 	ConditionVariable fEmptyQueueCV;
 
 	static Request *GetRootRequest(Request *req);
 	Domain *GetRoot();
-	void BeginSubrequests();
-	void EndSubrequests();
+	void BeginSubrequests(Request *rootReq);
+	void EndSubrequests(Request *rootReq);
 
 public:
 	Domain();
