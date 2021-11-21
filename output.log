@@ -1,0 +1,53 @@
++ThreadPool
++Domain(0x11b9c9c70820)
++Domain(0x11b9c9c709d0)
++Domain(0x11b9c9c70a60)
++Domain(0x11b9c9c70af0)
+0x11b9c9c70a60.Schedule(11TestRequest:1)
+0x11b9c9c70a60.Run(11TestRequest:1)
+0x11b9c9c70af0.Schedule(11TestRequest:2)
+0x11b9c9c70af0.Run(11TestRequest:2)
++0x11b9c9cb9ff0.ThreadEntry
+0x11b9c9c70820.Schedule(11SyncRequest:3)
+0x11b9c9c70820.Run(11SyncRequest:3)
+TestRoster{
+TestRoster: 1(0)
+TestRoster}
++0x11b9c9cb9fc0.ThreadEntry
+0x11b9c9c70820.Schedule(11SyncRequest:4)
+0x11b9c9c70820.Yield()
+0x11b9c9c70820.Schedule(11SyncRequest:3)
+0x11b9c9c70a60.Done(11TestRequest:1, 1)
+0x11b9c9c70a60: last request
+0x11b9c9c70820.Cancel(0x11b9c9cd4230)
+0x11b9c9c70820.Done(11SyncRequest:3, 1)
+0x11b9c9c70820.Schedule(11SyncRequest:3)
+0x11b9c9c70820.Run(11SyncRequest:3)
+
+~/Tests/HaikuUtils/StackTrace> objects.x86_64-cc8-release/StackTrace 9345
+FP: 0x00007F15C02E53E0, <libroot.so> _kern_mutex_sem_acquire + 12
+FP: 0x00007F15C02E5480, <Domains> Domain::Wait() + 533
+FP: 0x00007F15C02E54B0, <Domains> Domain::Yield() + 74
+FP: 0x00007F15C02E54E0, <Domains> TestRoster::Do(int, int) + 194
+FP: 0x00007F15C02E5530, <Domains> TestObject::Do() + 110
+FP: 0x00007F15C02E5560, <Domains> TestRequest::Do(Object*) + 75
+FP: 0x00007F15C02E55A0, <Domains> Domain::AsyncEntry(ThreadPoolItem*) + 154
+FP: 0x00007F15C02E55E0, <Domains> ThreadPoolItem::ThreadEntry(void*) + 120
+FP: 0x00007F15C02E5600, <libroot.so> thread_entry + 25
+FP: 0x0000000000000000, <commpage> commpage_thread_exit + 0
+~/Tests/HaikuUtils/StackTrace> objects.x86_64-cc8-release/StackTrace 9346
+FP: 0x00007FAE1855FCD0, <libroot.so> _kern_mutex_sem_acquire + 12
+FP: 0x00007FAE1855FD20, <Domains> Domain::BeginSync() + 285
+FP: 0x00007FAE1855FD50, <Domains> ExternalPtr<TestRoster>::Switch() + 82
+FP: 0x00007FAE1855FDA0, <Domains> TestObject::Do() + 71
+FP: 0x00007FAE1855FDD0, <Domains> TestRequest::Do(Object*) + 75
+FP: 0x00007FAE1855FE10, <Domains> Domain::AsyncEntry(ThreadPoolItem*) + 154
+FP: 0x00007FAE1855FE50, <Domains> ThreadPoolItem::ThreadEntry(void*) + 120
+FP: 0x00007FAE1855FE70, <libroot.so> thread_entry + 25
+FP: 0x0000000000000000, <commpage> commpage_thread_exit + 0
+~/Tests/HaikuUtils/StackTrace> objects.x86_64-cc8-release/StackTrace 9344
+FP: 0x00007F4E791DFB50, <libroot.so> _kern_acquire_sem + 9
+FP: 0x00007F4E791DFBB0, <Domains> main + 284
+FP: 0x00007F4E791DFBE0, <Domains> _start + 62
+FP: 0x00007F4E791DFC10, <runtime_loader> runtime_loader + 261
+FP: 0x0000000000000000, <commpage> commpage_thread_exit + 0
