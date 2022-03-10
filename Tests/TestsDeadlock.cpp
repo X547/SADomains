@@ -1,6 +1,6 @@
 #include <OS.h>
-#include "Domains.h"
-#include "../../Locks/AutoLock.h"
+#include "SADomains/Domains.h"
+#include "Locks/AutoLock.h"
 #include <stdio.h>
 
 enum {

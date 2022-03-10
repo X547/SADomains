@@ -1,19 +1,27 @@
-#include "Domains.h"
+#include "SADomains/Domains.h"
 #include <stdio.h>
 
 class Object2: public Object
 {
+private:
+	Domain *dom;
+	Request *rootReq;
+
 public:
 	void DoAsync()
 	{
 		printf("+Object2::DoAsync()\n");
+		dom->Schedule(rootReq);
 	}
 
 	void Do()
 	{
+		dom = CurrentDomain();
+		rootReq = dom->RootRequest();
+		dom = GetRequestDomain(rootReq);
 		MakeAsyncRequestMth(ExternalPtr<Object2>(this), &Object2::DoAsync)->Schedule();
 		printf("+Object2::Do()\n");
-		CurrentDomain()->Yield();
+		Domain::Wait();
 		printf("-Object2::Do()\n");
 	}
 };

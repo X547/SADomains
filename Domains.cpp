@@ -1,7 +1,7 @@
 #include "Domains.h"
 
 #include <stdio.h>
-#include "../Locks/AutoLock.h"
+#include "Locks/AutoLock.h"
 
 #include <algorithm>
 #include <map>
@@ -94,9 +94,19 @@ Domain *CurrentDomain()
 	return gCurDomain;
 }
 
+Domain *CurrentRootDomain()
+{
+	Domain *curDomain = CurrentDomain();
+	if (curDomain == NULL) {
+		return curDomain;
+	}
+	return curDomain->GetRoot();
+}
+
 static inline void SetDomain(Domain *d)
 {
 	gCurDomain = d;
+	Trace("SetDomain(%p), thread: %" B_PRId32 "\n", d, find_thread(NULL));
 }
 
 
@@ -120,7 +130,9 @@ Request::Request():
 {}
 
 Request::~Request()
-{SetIncl(state, 31);}
+{
+	Assert(!SetIn(pendingRequest, state) && !SetIn(runningRequest, state));
+}
 
 void Request::Resolved()
 {
@@ -135,6 +147,9 @@ AsyncRequest::AsyncRequest(ExternalPtr<Object> ptr):
 	Assert(fPtr != NULL);
 }
 
+AsyncRequest::~AsyncRequest()
+{}
+
 
 SyncRequest::SyncRequest(Domain *root, Domain *dst):
 	fRoot(root),
@@ -144,11 +159,10 @@ SyncRequest::SyncRequest(Domain *root, Domain *dst):
 }
 
 SyncRequest::~SyncRequest()
-{
-}
+{}
 
 
-static Domain *GetRequestDomain(Request *_req)
+Domain *GetRequestDomain(Request *_req)
 {
 	if (auto req = dynamic_cast<AsyncRequest*>(_req))
 		return req->TargetDomain();
@@ -204,8 +218,11 @@ void Domain::Run(Request *_req)
 			ThreadPoolItem *pi = gThreadPool.Take(this);
 			pi->fSem.Release();
 		}
-	} else
-		Assert(false); // unknown request type
+	} else {
+		char *name = CppDemangle(typeid(*_req).name());
+		fprintf(stderr, "[!] unknown request type: %s\n", name);
+		Assert(false);
+	}
 }
 
 void Domain::Done(Request *req, RequestFlag flag)
@@ -219,10 +236,12 @@ void Domain::Done(Request *req, RequestFlag flag)
 	fQueue = next; if (next == NULL) fQueueEnd = NULL;
 	SetExcl(req->state, runningRequest);
 	SetIncl(req->state, flag);
-	if (SetIn(doneRequest, req->state) && !SetIn(pendingRequest, req->state))
-		req->Resolved();
+	uint32 oldState = req->state;
+	if (SetIn(doneRequest, oldState) && !SetIn(pendingRequest, oldState)) {
+		req->Resolved(); req = NULL;
+	}
 	if (next == NULL) {
-		if (SetIn(pendingRequest, req->state)) {
+		if (SetIn(pendingRequest, oldState)) {
 			SetExcl(req->state, pendingRequest);
 			Schedule(req); // calls Run
 		} else {
@@ -230,7 +249,7 @@ void Domain::Done(Request *req, RequestFlag flag)
 			fEmptyQueueCV.Release(true);
 		}
 	} else {
-		if (SetIn(pendingRequest, req->state)) {
+		if (SetIn(pendingRequest, oldState)) {
 			SetExcl(req->state, pendingRequest);
 			Schedule(req);
 		}
@@ -341,26 +360,20 @@ void Domain::BeginSync()
 	SyncRequest *req;
 	{
 		AutoLock lock(fLocker);
-
-		req = dynamic_cast<SyncRequest*>(fQueue);
-		Domain *rootDom = NULL;
-		bool isRootDom = false;
-		if (CurrentDomain() != NULL) {
-			rootDom = CurrentDomain()->GetRoot();
-		} else {
-			rootDom = this;
-			isRootDom = true;
-		}
-		if (req != NULL && !isRootDom && req->fRoot == rootDom) {
-			req->fRefCnt++;
+		SyncRequest *runReq = dynamic_cast<SyncRequest*>(fQueue);
+		Domain *rootDom = CurrentRootDomain();
+		if (runReq != NULL && runReq->fRoot == rootDom) {
+			runReq->fRefCnt++;
 			return;
 		}
-		req = new SyncRequest(rootDom, this);
-		if (!isRootDom) {
+		if (rootDom == NULL) {
+			req = new SyncRequest(this, this);
+		} else {
+			req = new SyncRequest(rootDom, this);
 			Request *rootReq = rootDom->RootRequest();
 			req->nextSub = rootReq->nextSub; rootReq->nextSub = req;
 		}
-		// Trace("BeginSync: "); WriteSubrequests(rootReq);
+		//Trace("BeginSync: "); WriteSubrequests(req->fRoot);
 		Schedule(req);
 	}
 	req->fSem.Acquire();
@@ -368,8 +381,12 @@ void Domain::BeginSync()
 
 void Domain::EndSync()
 {
-	SyncRequest *req = dynamic_cast<SyncRequest*>(fQueue);
+	AutoLock lock(fLocker);
+	Request *curReq = fQueue;
+	SyncRequest *req = dynamic_cast<SyncRequest*>(curReq);
+	AsyncRequest *asyncReq = dynamic_cast<AsyncRequest*>(curReq);
 	Assert(req != NULL);
+	Assert(asyncReq == NULL);
 	Domain *rootDom = req->fRoot;
 	Request *rootReq = RootRequest();
 	Assert(req->fRefCnt > 0);
@@ -385,7 +402,7 @@ void Domain::EndSync()
 			if (prev == NULL) {rootReq->nextSub = req->nextSub;} else {prev->nextSub = req->nextSub;}
 			req->nextSub = NULL;
 		}
-		// Trace("EndSync: "); WriteSubrequests(rootReq);
+		//Trace("EndSync: "); WriteSubrequests(rootReq);
 		Done(req, doneRequest);
 	}
 }
@@ -403,12 +420,12 @@ void Domain::BeginSubrequests(Request *rootReq)
 		cur->nextSub = reversed; reversed = cur;
 	}
 	rootReq->nextSub = reversed;
-	// Trace("Wait(3): "); WriteSubrequests(rootReq);
+	//Trace("Wait(3): "); WriteSubrequests(rootReq);
 }
 
 void Domain::EndSubrequests(Request *rootReq)
 {
-	// Trace("Wait(1): "); WriteSubrequests(rootReq);
+	//Trace("Wait(1): "); WriteSubrequests(rootReq);
 	SyncRequest *reversed = NULL;
 	while (rootReq->nextSub != NULL) {
 		SyncRequest *cur = rootReq->nextSub;
@@ -417,15 +434,14 @@ void Domain::EndSubrequests(Request *rootReq)
 		cur->nextSub = reversed; reversed = cur;
 	}
 	rootReq->nextSub = reversed;
-	// Trace("Wait(2): "); WriteSubrequests(rootReq);
+	//Trace("Wait(2): "); WriteSubrequests(rootReq);
 }
 
 void Domain::Wait()
 {
-	Request *req = CurrentRequest();
-	Request *rootReq = GetRootRequest(req);
-	Assert(rootReq != NULL);
-	Domain *rootDom = GetRequestDomain(rootReq);
+	Domain *rootDom = CurrentRootDomain();
+	Assert(rootDom != NULL);
+	Request *rootReq = rootDom->CurrentRequest();
 	rootDom->EndSubrequests(rootReq);
 	rootDom->Done(rootReq, waitingRequest);
 	rootReq->fSem.Acquire();
@@ -434,9 +450,11 @@ void Domain::Wait()
 
 void Domain::Yield()
 {
-	Trace("%p.Yield()\n", this);
-	Request *rootReq = GetRootRequest(fQueue);
-	GetRequestDomain(rootReq)->Schedule(rootReq);
+	Domain *rootDom = CurrentRootDomain();
+	Assert(rootDom != NULL);
+	Trace("%p.Yield()\n", rootDom);
+	Request *rootReq = rootDom->CurrentRequest();
+	rootDom->Schedule(rootReq);
 	Wait();
 }
 

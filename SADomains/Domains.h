@@ -6,23 +6,24 @@
 #include <OS.h>
 #include <Referenceable.h>
 
-#include "../Locks/Sem.h"
-#include "../Locks/Mutex.h"
-#include "../Locks/RecursiveLock.h"
-#include "../Locks/ConditionVariable.h"
+#include "Locks/Sem.h"
+#include "Locks/Mutex.h"
+#include "Locks/RecursiveLock.h"
+#include "Locks/ConditionVariable.h"
 
 
 extern RecursiveLock gPrintLock;
 
 void Assert(bool cond);
 
-inline uint32 SetBit(uint32 bit) {return (1 << bit);}
-inline bool SetIn(uint32 bit, uint32 set) {return SetBit(bit) & set;}
-inline void SetIncl(uint32 &set, uint32 bit) {set |= SetBit(bit);}
-inline void SetExcl(uint32 &set, uint32 bit) {set &= ~SetBit(bit);}
+static inline uint32 SetBit(uint32 bit) {return (1 << bit);}
+static inline bool SetIn(uint32 bit, uint32 set) {return SetBit(bit) & set;}
+static inline void SetIncl(uint32 &set, uint32 bit) {set |= SetBit(bit);}
+static inline void SetExcl(uint32 &set, uint32 bit) {set &= ~SetBit(bit);}
 
 class Domain;
 
+template <typename Base> class ExternalPtrBase;
 template <typename Base> class ExternalPtr;
 template <typename Base> class LockedPtr;
 
@@ -50,14 +51,19 @@ public:
 
 //#pragma mark Domain
 
-Domain *CurrentDomain();
-
 class Request;
 class SyncRequest;
 class ThreadPoolItem;
+
+Domain *CurrentDomain();
+Domain *CurrentRootDomain();
+Domain *GetRequestDomain(Request *_req);
+
 class Domain: public BReferenceable
 {
 private:
+	friend Domain *CurrentRootDomain();
+
 	RecursiveLock fLocker;
 	Request *fQueue, *fQueueEnd;
 	bool fExiting;
@@ -85,8 +91,8 @@ public:
 
 	void BeginSync();
 	void EndSync();
-	void Wait();
-	void Yield();
+	static void Wait();
+	static void Yield();
 };
 
 class DomainSection
@@ -105,75 +111,62 @@ public:
 
 //#pragma mark Pointers
 
-template <typename Base>
+template <typename Base = Object>
 class LockedPtr
 {
+private:
+	friend ExternalPtrBase<Base>;
+	Base *fPtr;
+	DomainSection sect;
+
+	LockedPtr(Base *other, Domain *dom): fPtr(other), sect(dom) {}
+
 public:
 	~LockedPtr()
 	{
-		if (fPtr != NULL) {
-			sect.Unset();
-			fPtr->GetDomain()->EndSync();
-		}
+		if (fPtr == NULL) return;
+		sect.Unset();
+		fPtr->GetDomain()->EndSync();
 	}
 
 	void Unset()
 	{
-		if (fPtr != NULL) {
-			sect.Unset();
-			fPtr->GetDomain()->EndSync();
-			fPtr = NULL;
-		}
+		if (fPtr == NULL) return;
+		sect.Unset();
+		fPtr->GetDomain()->EndSync();
+		fPtr = NULL;
 	}
 
 	void Delete()
 	{
+		if (fPtr == NULL) return;
+		BReference<Domain> dom(fPtr->GetDomain(), false);
 		delete fPtr; fPtr = NULL;
+		sect.Unset();
+		dom->EndSync();
 	}
 
 	Base& operator*() const {return *fPtr;}
 	Base* operator->() const {return fPtr;}
 	operator Base*() const {return fPtr;}
-
-private:
-	friend ExternalPtr<Base>;
-	Base *fPtr;
-	DomainSection sect;
-
-	LockedPtr(Base *other, Domain *dom): fPtr(other), sect(dom) {}
 };
 
-template <typename Base>
-class ExternalPtr
+template <typename Base = Object>
+class ExternalPtrBase
 {
+protected:
+	friend Domain;
+	template<class OtherBase> friend class ExternalPtr;
+	template<class OtherBase> friend class ExternalRef;
+	template<class OtherBase> friend class ExternalUniquePtr;
+	Base *fPtr;
+
 public:
-	ExternalPtr(): fPtr(NULL) {}
-	template <typename OtherBase>
-	ExternalPtr(OtherBase *other): fPtr(other) {}
-	template <typename OtherBase>
-	ExternalPtr(ExternalPtr<OtherBase> other): fPtr(other.fPtr) {}
-
-	bool operator==(Base *other) const {return fPtr == other;}
-	bool operator!=(Base *other) const {return fPtr != other;}
-	bool operator==(ExternalPtr<Base> other) const {return fPtr == other.fPtr;}
-	bool operator!=(ExternalPtr<Base> other) const {return fPtr != other.fPtr;}
-	bool operator==(LockedPtr<Base> other) const {return fPtr == other.fPtr;}
-	bool operator!=(LockedPtr<Base> other) const {return fPtr != other.fPtr;}
-	void operator=(void *other){fPtr = fPtr;}
-
-	template <typename OtherBase>
-	void operator=(ExternalPtr<OtherBase> other) {fPtr = other.fPtr;}
-	template <typename OtherBase>
-	void operator=(LockedPtr<OtherBase> other){fPtr = other.fPtr;}
-
-	Base *Get() const {return fPtr;}
+	ExternalPtrBase(Base *other): fPtr(other) {}
 
 	Domain *GetDomain() const
 	{
-		Base *ptr = fPtr;
-		if (ptr == NULL)
-			return NULL;
-		return ptr->GetDomain();
+		return fPtr == NULL ? NULL : fPtr->GetDomain();
 	}
 
 	LockedPtr<Base> Lock() const
@@ -193,33 +186,55 @@ public:
 		}
 		return locked;
 	}
+};
+
+template <typename Base = Object>
+class ExternalPtr: public ExternalPtrBase<Base>
+{
+public:
+	ExternalPtr(): ExternalPtrBase<Base>(NULL) {}
+	ExternalPtr(Base *other): ExternalPtrBase<Base>(other) {}
+	ExternalPtr(const ExternalPtrBase<Base>& other): ExternalPtrBase<Base>(other.fPtr) {}
+    ExternalPtr(const ExternalPtr<Base>& other): ExternalPtrBase<Base>(other.fPtr) {}
+    template<class OtherBase>
+	ExternalPtr(OtherBase *other): ExternalPtrBase<Base>(other) {}
+	template<class OtherBase>
+	ExternalPtr(const ExternalPtrBase<OtherBase>& other): ExternalPtrBase<Base>(other.fPtr) {}
+
+	bool operator==(Base *other) const {return this->fPtr == other;}
+	bool operator!=(Base *other) const {return this->fPtr != other;}
+	bool operator==(ExternalPtr<Base> other) const {return this->fPtr == other.fPtr;}
+	bool operator!=(ExternalPtr<Base> other) const {return this->fPtr != other.fPtr;}
+	bool operator==(LockedPtr<Base> other) const {return this->fPtr == other.fPtr;}
+	bool operator!=(LockedPtr<Base> other) const {return this->fPtr != other.fPtr;}
+
+	void operator=(ExternalPtr<Base> other) {this->fPtr = other.fPtr;}
+	void operator=(LockedPtr<Base> other){this->fPtr = other.fPtr;}
+
+	Base *Get() const {return this->fPtr;}
 
 	void Unset()
 	{
-		fPtr = NULL;
+		this->fPtr = NULL;
 	}
 
 	void Delete()
 	{
-		if (fPtr != NULL) {
-			Switch().Delete();
-			fPtr = NULL;
-		}
+		if (this->fPtr == NULL) return;
+		this->Switch().Delete();
+		this->fPtr = NULL;
 	}
-
-private:
-	template<class OtherBase>
-	friend class ExternalPtr;
-	friend Domain;
-	Base *fPtr;
 };
 
 template<typename T, typename... Args>
 ExternalPtr<T> MakeExternal(Args&&... args)
 {
 	BReference<Domain> domain(new Domain(), true);
+	domain->BeginSync();
 	DomainSection sect(domain);
 	ExternalPtr<T> ptr(new T(std::forward<Args>(args)...));
+	sect.Unset();
+	domain->EndSync();
 	return ptr;
 }
 
@@ -247,7 +262,7 @@ public:
 	int32 fRefCnt;
 
 	SyncRequest(Domain *root, Domain *dst);
-	~SyncRequest();
+	virtual ~SyncRequest();
 };
 
 class AsyncRequest: public Request
@@ -258,6 +273,7 @@ private:
 
 public:
 	AsyncRequest(ExternalPtr<Object> ptr);
+	virtual ~AsyncRequest();
 
 	Domain *TargetDomain() {return fPtr.GetDomain();}
 	void Schedule() {TargetDomain()->Schedule(this);}
@@ -299,7 +315,7 @@ private:
 
 public:
 	AsyncRequestMthTmpl(ExternalPtr<Type> ptr, void (Type::*method)()):
-		AsyncRequest(ExternalPtr<Object>(ptr)),
+		AsyncRequest(ptr),
 		fMethod(method)
 	{}
 
@@ -350,5 +366,7 @@ public:
 	void Put(ThreadPoolItem* pi);
 };
 
+
+#include "DomainPointers.h"
 
 #endif	// _DOMAINS_H_

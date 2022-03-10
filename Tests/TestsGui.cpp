@@ -5,9 +5,9 @@
 #include <View.h>
 #include "Lists.h"
 #include "AppKitPtrs.h"
-#include "../Locks/Timer.h"
+#include "Locks/Timer.h"
 
-#include "Domains.h"
+#include "SADomains/Domains.h"
 
 
 AppKitPtrs::ExternalPtr<class TestView> gView;
