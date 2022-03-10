@@ -18,7 +18,7 @@ public:
 	{
 		dom = CurrentDomain();
 		rootReq = dom->RootRequest();
-		dom = GetRequestDomain(rootReq);
+		dom = rootReq->TargetDomain();
 		MakeAsyncRequestMth(ExternalPtr<Object2>(this), &Object2::DoAsync)->Schedule();
 		printf("+Object2::Do()\n");
 		Domain::Wait();

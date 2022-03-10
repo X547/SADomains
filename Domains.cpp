@@ -37,7 +37,7 @@ void Trace(Args&&... args)
 		printf(std::forward<Args>(args)...);
 }
 
-static void WriteRequest(Request *req)
+void Request::WriteRequest()
 {
 	if (!doTrace)
 		return;
@@ -48,19 +48,19 @@ static void WriteRequest(Request *req)
 	AutoLock lock(gPrintLock);
 
 	int32 id;
-	auto it = dict.find(req);
+	auto it = dict.find(this);
 	if (it == dict.end()) {
 		id = newId++;
-		dict[req] = id;
+		dict[this] = id;
 	} else {
 		id = it->second;
 	}
-	char *name = CppDemangle(typeid(*req).name());
+	char *name = CppDemangle(typeid(*this).name());
 	Trace("%s[%d](state: {", name, id);
 	free(name); name = NULL;
 	bool first = true;
 	for (int i = 0; i < 32; i++) {
-		if (SetIn(i, req->state)) {
+		if (SetIn(i, this->state)) {
 			if (first) first = false; else Trace(", ");
 			switch (i) {
 			case pendingRequest: Trace("pending"); break;
@@ -75,12 +75,12 @@ static void WriteRequest(Request *req)
 	Trace("})");
 }
 
-static void WriteSubrequests(Request *req)
+void Request::WriteSubrequests()
 {
 	AutoLock lock(gPrintLock);
-	WriteRequest(req); Trace(" {\n");
-	for (Request *cur = req->nextSub; cur != NULL; cur = cur->nextSub) {
-		Trace("\t"); WriteRequest(cur); Trace("\n");
+	this->WriteRequest(); Trace(" {\n");
+	for (Request *cur = this->nextSub; cur != NULL; cur = cur->nextSub) {
+		Trace("\t"); cur->WriteRequest(); Trace("\n");
 	}
 	Trace("}\n");
 }
@@ -136,7 +136,7 @@ Request::~Request()
 
 void Request::Resolved()
 {
-	WriteRequest(this); Trace(".Resolved\n");
+	WriteRequest(); Trace(".Resolved\n");
 	delete this;
 }
 
@@ -160,17 +160,6 @@ SyncRequest::SyncRequest(Domain *root, Domain *dst):
 
 SyncRequest::~SyncRequest()
 {}
-
-
-Domain *GetRequestDomain(Request *_req)
-{
-	if (auto req = dynamic_cast<AsyncRequest*>(_req))
-		return req->TargetDomain();
-	if (auto req = dynamic_cast<SyncRequest*>(_req))
-		return req->fDst;
-	Assert(false);
-	return NULL;
-}
 
 
 //#pragma mark Domain
@@ -200,35 +189,37 @@ Domain::~Domain()
 	Assert(fQueue == NULL);
 }
 
-void Domain::Run(Request *_req)
+void SyncRequest::Run(Domain *dom)
+{
+	SetExcl(state, waitingRequest);
+	fSem.Release();
+}
+
+void AsyncRequest::Run(Domain *dom)
+{
+	if (SetIn(waitingRequest, state)) {
+		SetExcl(state, waitingRequest);
+		Trace("resuming %p\n", this);
+		fSem.Release();
+	} else {
+		ThreadPoolItem *pi = gThreadPool.Take(dom);
+		pi->fSem.Release();
+	}
+}
+
+void Domain::Run(Request *req)
 {
 	AutoLock lock(fLocker);
-	Trace("%p.Run(", this); WriteRequest(_req); Trace(")\n");
-	SetExcl(_req->state, pendingRequest);
-	SetIncl(_req->state, runningRequest);
-	if (auto req = dynamic_cast<SyncRequest*>(_req)) {
-		SetExcl(req->state, waitingRequest);
-		req->fSem.Release();
-	} else if (auto req = dynamic_cast<AsyncRequest*>(_req)) {
-		if (SetIn(waitingRequest, req->state)) {
-			SetExcl(req->state, waitingRequest);
-			Trace("resuming %p\n", req);
-			req->fSem.Release();
-		} else {
-			ThreadPoolItem *pi = gThreadPool.Take(this);
-			pi->fSem.Release();
-		}
-	} else {
-		char *name = CppDemangle(typeid(*_req).name());
-		fprintf(stderr, "[!] unknown request type: %s\n", name);
-		Assert(false);
-	}
+	Trace("%p.Run(", this); req->WriteRequest(); Trace(")\n");
+	SetExcl(req->state, pendingRequest);
+	SetIncl(req->state, runningRequest);
+	req->Run(this);
 }
 
 void Domain::Done(Request *req, RequestFlag flag)
 {
 	AutoLock lock(fLocker);
-	Trace("%p.Done(", this); WriteRequest(req); Trace(", %d)\n", flag != doneRequest);
+	Trace("%p.Done(", this); req->WriteRequest(); Trace(", %d)\n", flag != doneRequest);
 	Assert(req == fQueue && SetIn(runningRequest, req->state));
 	Assert((fQueue != NULL && fQueueEnd != NULL) || (fQueue == NULL && fQueueEnd == NULL));
 	Request *next = req->next;
@@ -280,7 +271,7 @@ void Domain::WaitForEmptyQueue()
 void Domain::Schedule(Request *req)
 {
 	AutoLock lock(fLocker);
-	Trace("%p.Schedule(", this); WriteRequest(req); Trace(")\n");
+	Trace("%p.Schedule(", this); req->WriteRequest(); Trace(")\n");
 	Assert(!(fExiting && fQueue == NULL));
 	Assert((fQueue != NULL && fQueueEnd != NULL) || (fQueue == NULL && fQueueEnd == NULL));
 	if (SetIn(pendingRequest, req->state) || (SetIn(runningRequest, req->state) && SetIn(pendingRequest, req->state)))

@@ -57,7 +57,6 @@ class ThreadPoolItem;
 
 Domain *CurrentDomain();
 Domain *CurrentRootDomain();
-Domain *GetRequestDomain(Request *_req);
 
 class Domain: public BReferenceable
 {
@@ -71,15 +70,14 @@ private:
 
 	static Request *GetRootRequest(Request *req);
 	Domain *GetRoot();
+	void Run(Request *_req);
+	void Done(Request *req, RequestFlag flag);
 	void BeginSubrequests(Request *rootReq);
 	void EndSubrequests(Request *rootReq);
 
 public:
 	Domain();
 	~Domain();
-
-	void Run(Request *_req);
-	void Done(Request *req, RequestFlag flag);
 
 	Request *CurrentRequest();
 	Request *RootRequest();
@@ -243,39 +241,55 @@ ExternalPtr<T> MakeExternal(Args&&... args)
 
 class Request
 {
-public:
+protected:
+	friend class Domain;
 	uint32 state;
 	Request *next;
 	SyncRequest *nextSub;
 	Sem fSem;
 
+	void WriteRequest();
+	void WriteSubrequests();
+
+	virtual void Run(Domain *dom) = 0;
+
+public:
 	Request();
 	virtual ~Request();
+	virtual Domain *TargetDomain() = 0;
 	virtual void Resolved();
 };
 
 class SyncRequest: public Request
 {
-public:
+private:
+	friend class Domain;
 	Domain *fRoot;
 	Domain *fDst;
 	int32 fRefCnt;
 
 	SyncRequest(Domain *root, Domain *dst);
+	void Run(Domain *dom) override;
+
+public:
 	virtual ~SyncRequest();
+
+	Domain *TargetDomain() final {return fDst;}
 };
 
 class AsyncRequest: public Request
 {
 private:
-	friend Domain;
+	friend class Domain;
 	ExternalPtr<Object> fPtr;
+
+	void Run(Domain *dom) override;
 
 public:
 	AsyncRequest(ExternalPtr<Object> ptr);
 	virtual ~AsyncRequest();
 
-	Domain *TargetDomain() {return fPtr.GetDomain();}
+	Domain *TargetDomain() final {return fPtr.GetDomain();}
 	void Schedule() {TargetDomain()->Schedule(this);}
 	void Cancel() {TargetDomain()->Cancel(this);}
 
