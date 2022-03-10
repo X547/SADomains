@@ -16,11 +16,6 @@ extern RecursiveLock gPrintLock;
 
 void Assert(bool cond);
 
-static inline uint32 SetBit(uint32 bit) {return (1 << bit);}
-static inline bool SetIn(uint32 bit, uint32 set) {return SetBit(bit) & set;}
-static inline void SetIncl(uint32 &set, uint32 bit) {set |= SetBit(bit);}
-static inline void SetExcl(uint32 &set, uint32 bit) {set &= ~SetBit(bit);}
-
 class Domain;
 
 template <typename Base> class ExternalPtrBase;
@@ -28,12 +23,17 @@ template <typename Base> class ExternalPtr;
 template <typename Base> class LockedPtr;
 
 
-enum RequestFlag {
-	pendingRequest,
-	runningRequest,
-	doneRequest,
-	cancelledRequest,
-	waitingRequest,
+struct RequestFlags {
+	union {
+		struct {
+			uint32 pending: 1;
+			uint32 running: 1;
+			uint32 done: 1;
+			uint32 cancelled: 1;
+			uint32 waiting: 1;
+		};
+		uint32 val;
+	};
 };
 
 
@@ -71,7 +71,7 @@ private:
 	static Request *GetRootRequest(Request *req);
 	Domain *GetRoot();
 	void Run(Request *_req);
-	void Done(Request *req, RequestFlag flag);
+	void Done(Request *req, RequestFlags flag);
 	void BeginSubrequests(Request *rootReq);
 	void EndSubrequests(Request *rootReq);
 
@@ -83,7 +83,7 @@ public:
 	Request *RootRequest();
 	void WaitForEmptyQueue();
 	void Schedule(Request *req);
-	void Cancel(Request *req, RequestFlag flag = cancelledRequest);
+	void Cancel(Request *req, RequestFlags flag = {.cancelled = true});
 
 	void AsyncEntry(ThreadPoolItem *pi);
 
@@ -243,7 +243,7 @@ class Request
 {
 protected:
 	friend class Domain;
-	uint32 state;
+	RequestFlags state;
 	Request *next;
 	SyncRequest *nextSub;
 	Sem fSem;

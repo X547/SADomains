@@ -7,6 +7,10 @@
 #include <map>
 #include <cxxabi.h>
 
+static inline uint32 SetBit(uint32 bit) {return (1 << bit);}
+static inline bool SetIn(uint32 bit, uint32 set) {return SetBit(bit) & set;}
+
+
 void Assert(bool cond)
 {
 	if (!cond) {
@@ -60,14 +64,14 @@ void Request::WriteRequest()
 	free(name); name = NULL;
 	bool first = true;
 	for (int i = 0; i < 32; i++) {
-		if (SetIn(i, this->state)) {
+		if (SetIn(i, this->state.val)) {
 			if (first) first = false; else Trace(", ");
 			switch (i) {
-			case pendingRequest: Trace("pending"); break;
-			case runningRequest: Trace("running"); break;
-			case doneRequest: Trace("done"); break;
-			case cancelledRequest: Trace("cancelled"); break;
-			case waitingRequest: Trace("waiting"); break;
+			case 0: Trace("pending"); break;
+			case 1: Trace("running"); break;
+			case 2: Trace("done"); break;
+			case 3: Trace("cancelled"); break;
+			case 4: Trace("waiting"); break;
 			default: Trace("? (%d)", i);
 			}
 		}
@@ -123,7 +127,7 @@ Object::~Object()
 //#pragma mark Requests
 
 Request::Request():
-	state(0),
+	state({}),
 	next(NULL),
 	nextSub(NULL),
 	fSem(0)
@@ -131,7 +135,7 @@ Request::Request():
 
 Request::~Request()
 {
-	Assert(!SetIn(pendingRequest, state) && !SetIn(runningRequest, state));
+	Assert(!state.pending && !state.running);
 }
 
 void Request::Resolved()
@@ -150,6 +154,18 @@ AsyncRequest::AsyncRequest(ExternalPtr<Object> ptr):
 AsyncRequest::~AsyncRequest()
 {}
 
+void AsyncRequest::Run(Domain *dom)
+{
+	if (state.waiting) {
+		state.waiting = false;
+		Trace("resuming %p\n", this);
+		fSem.Release();
+	} else {
+		ThreadPoolItem *pi = gThreadPool.Take(dom);
+		pi->fSem.Release();
+	}
+}
+
 
 SyncRequest::SyncRequest(Domain *root, Domain *dst):
 	fRoot(root),
@@ -160,6 +176,12 @@ SyncRequest::SyncRequest(Domain *root, Domain *dst):
 
 SyncRequest::~SyncRequest()
 {}
+
+void SyncRequest::Run(Domain *dom)
+{
+	state.waiting = false;
+	fSem.Release();
+}
 
 
 //#pragma mark Domain
@@ -182,66 +204,48 @@ Domain::~Domain()
 		auto syncReq = dynamic_cast<SyncRequest*>(fQueue);
 		auto asyncReq = dynamic_cast<AsyncRequest*>(fQueue);
 		if (syncReq != NULL || (asyncReq != NULL && asyncReq->fPtr.GetDomain() == this))
-			Done(fQueue, doneRequest);
+			Done(fQueue, RequestFlags{.done = true});
 		WaitForEmptyQueue();
 	}
 	Trace("-Domain(%p): done\n", this);
 	Assert(fQueue == NULL);
 }
 
-void SyncRequest::Run(Domain *dom)
-{
-	SetExcl(state, waitingRequest);
-	fSem.Release();
-}
-
-void AsyncRequest::Run(Domain *dom)
-{
-	if (SetIn(waitingRequest, state)) {
-		SetExcl(state, waitingRequest);
-		Trace("resuming %p\n", this);
-		fSem.Release();
-	} else {
-		ThreadPoolItem *pi = gThreadPool.Take(dom);
-		pi->fSem.Release();
-	}
-}
-
 void Domain::Run(Request *req)
 {
 	AutoLock lock(fLocker);
 	Trace("%p.Run(", this); req->WriteRequest(); Trace(")\n");
-	SetExcl(req->state, pendingRequest);
-	SetIncl(req->state, runningRequest);
+	req->state.pending = false;
+	req->state.running = true;
 	req->Run(this);
 }
 
-void Domain::Done(Request *req, RequestFlag flag)
+void Domain::Done(Request *req, RequestFlags flag)
 {
 	AutoLock lock(fLocker);
-	Trace("%p.Done(", this); req->WriteRequest(); Trace(", %d)\n", flag != doneRequest);
-	Assert(req == fQueue && SetIn(runningRequest, req->state));
+	Trace("%p.Done(", this); req->WriteRequest(); Trace(", %d)\n", flag.val != RequestFlags{.done = true}.val);
+	Assert(req == fQueue && req->state.running);
 	Assert((fQueue != NULL && fQueueEnd != NULL) || (fQueue == NULL && fQueueEnd == NULL));
 	Request *next = req->next;
 	req->next = NULL;
 	fQueue = next; if (next == NULL) fQueueEnd = NULL;
-	SetExcl(req->state, runningRequest);
-	SetIncl(req->state, flag);
-	uint32 oldState = req->state;
-	if (SetIn(doneRequest, oldState) && !SetIn(pendingRequest, oldState)) {
+	req->state.running = false;
+	req->state.val |= flag.val;
+	RequestFlags oldState = req->state;
+	if (oldState.done && !oldState.pending) {
 		req->Resolved(); req = NULL;
 	}
 	if (next == NULL) {
-		if (SetIn(pendingRequest, oldState)) {
-			SetExcl(req->state, pendingRequest);
+		if (oldState.pending) {
+			req->state.pending = false;
 			Schedule(req); // calls Run
 		} else {
 			Trace("%p: last request\n", this);
 			fEmptyQueueCV.Release(true);
 		}
 	} else {
-		if (SetIn(pendingRequest, oldState)) {
-			SetExcl(req->state, pendingRequest);
+		if (oldState.pending) {
+			req->state.pending = false;
 			Schedule(req);
 		}
 		Run(next);
@@ -274,16 +278,16 @@ void Domain::Schedule(Request *req)
 	Trace("%p.Schedule(", this); req->WriteRequest(); Trace(")\n");
 	Assert(!(fExiting && fQueue == NULL));
 	Assert((fQueue != NULL && fQueueEnd != NULL) || (fQueue == NULL && fQueueEnd == NULL));
-	if (SetIn(pendingRequest, req->state) || (SetIn(runningRequest, req->state) && SetIn(pendingRequest, req->state)))
+	if (req->state.pending || (req->state.running && req->state.pending))
 		return; // already scheduled
-	if (SetIn(runningRequest, req->state)) {
+	if (req->state.running) {
 		Assert(req == fQueue);
-		SetIncl(req->state, pendingRequest);
+		req->state.pending = true;
 		return;
 	}
-	Assert(!SetIn(pendingRequest, req->state) && !SetIn(runningRequest, req->state));
-	SetExcl(req->state, cancelledRequest); SetExcl(req->state, doneRequest);
-	SetIncl(req->state, pendingRequest);
+	Assert(!req->state.pending && !req->state.running);
+	req->state.cancelled = false; req->state.done = false;
+	req->state.pending = true;
 	if (fQueue == NULL)
 		fQueue = req;
 	else
@@ -294,13 +298,13 @@ void Domain::Schedule(Request *req)
 		Run(req);
 }
 
-void Domain::Cancel(Request *req, RequestFlag flag)
+void Domain::Cancel(Request *req, RequestFlags flag)
 {
 	AutoLock lock(fLocker);
 	Trace("%p.Cancel(%p)\n", this, req);
-	Assert(SetIn(pendingRequest, req->state));
-	if (SetIn(runningRequest, req->state)) {
-		SetExcl(req->state, pendingRequest);
+	Assert(req->state.pending);
+	if (req->state.running) {
+		req->state.pending = false;
 		return;
 	}
 	Assert(req != fQueue);
@@ -312,9 +316,9 @@ void Domain::Cancel(Request *req, RequestFlag flag)
 	if (fQueueEnd == req) fQueueEnd = prev;
 	req->next = NULL;
 
-	SetExcl(req->state, pendingRequest);
-	SetIncl(req->state, flag);
-	if (SetIn(cancelledRequest, req->state))
+	req->state.pending = false;
+	req->state.val |= flag.val;
+	if (req->state.cancelled)
 		req->Resolved();
 }
 
@@ -327,7 +331,7 @@ void Domain::AsyncEntry(ThreadPoolItem *pi)
 	req->Do(req->fPtr.fPtr);
 	SetDomain(NULL);
 	gThreadPool.Put(pi);
-	Done(req, doneRequest);
+	Done(req, RequestFlags{.done = true});
 }
 
 
@@ -394,7 +398,7 @@ void Domain::EndSync()
 			req->nextSub = NULL;
 		}
 		//Trace("EndSync: "); WriteSubrequests(rootReq);
-		Done(req, doneRequest);
+		Done(req, RequestFlags{.done = true});
 	}
 }
 
@@ -420,7 +424,7 @@ void Domain::EndSubrequests(Request *rootReq)
 	SyncRequest *reversed = NULL;
 	while (rootReq->nextSub != NULL) {
 		SyncRequest *cur = rootReq->nextSub;
-		cur->fDst->Done(cur, waitingRequest);
+		cur->fDst->Done(cur, RequestFlags{.waiting = true});
 		rootReq->nextSub = cur->nextSub;
 		cur->nextSub = reversed; reversed = cur;
 	}
@@ -434,7 +438,7 @@ void Domain::Wait()
 	Assert(rootDom != NULL);
 	Request *rootReq = rootDom->CurrentRequest();
 	rootDom->EndSubrequests(rootReq);
-	rootDom->Done(rootReq, waitingRequest);
+	rootDom->Done(rootReq, RequestFlags{.waiting = true});
 	rootReq->fSem.Acquire();
 	rootDom->BeginSubrequests(rootReq);
 }
