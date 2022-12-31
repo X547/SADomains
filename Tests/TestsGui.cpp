@@ -216,20 +216,25 @@ public:
 		fWnd = new TestWindow(BRect(0, 0, 256, 256).OffsetByCopy(64, 64));
 		fWnd->Show();
 		
-		for (int j = 0; j < 2; j++) {
+		enum {
+			jCnt = 6,
+			iCnt = 3,
+		};
+		
+		for (int j = 0; j < jCnt; j++) {
 			auto p0 = MakeExternal<TestObject0>();
-	/*
-			for (int i = 0; i < 8; i++) {
-				auto p1 = MakeExternal<TestObject>(BPoint(8, 8 + 12*(i + 8*j)), p0);
+			for (int i = 0; i < iCnt; i++) {
+				auto p1 = MakeExternal<TestObject>(BPoint(8, 8 + 12*(i + iCnt*j)), p0);
 				MakeAsyncRequestMth(p1, &TestObject::Do)->Schedule();
 			}
-	*/
+	/*
 			for (int i = 0; i < 8; i++) {
 				//auto p0Locked = p0.Switch();
 				DomainSection ds(p0.GetDomain());
 				auto p1 = new TestObject2(BPoint(8, 8 + 12*(i + 8*j)), p0);
 				MakeAsyncRequestMth(ExternalPtr<TestObject2>(p1), &TestObject2::Do)->Schedule();
 			}
+	*/
 		}
 	}
 

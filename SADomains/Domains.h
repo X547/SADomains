@@ -57,6 +57,7 @@ class ThreadPoolItem;
 
 Domain *CurrentDomain();
 Domain *CurrentRootDomain();
+Request *CurrentRootRequest();
 
 class Domain: public BReferenceable
 {
@@ -167,6 +168,8 @@ public:
 		return fPtr == NULL ? NULL : fPtr->GetDomain();
 	}
 
+	Base *Get() const {return this->fPtr;}
+
 	LockedPtr<Base> Lock() const
 	{
 		LockedPtr<Base> locked(fPtr, CurrentDomain());
@@ -208,8 +211,6 @@ public:
 
 	void operator=(ExternalPtr<Base> other) {this->fPtr = other.fPtr;}
 	void operator=(LockedPtr<Base> other){this->fPtr = other.fPtr;}
-
-	Base *Get() const {return this->fPtr;}
 
 	void Unset()
 	{
@@ -258,6 +259,9 @@ public:
 	virtual ~Request();
 	virtual Domain *TargetDomain() = 0;
 	virtual void Resolved();
+
+	void Schedule() {TargetDomain()->Schedule(this);}
+	void Cancel() {TargetDomain()->Cancel(this);}
 };
 
 class SyncRequest: public Request
@@ -290,8 +294,6 @@ public:
 	virtual ~AsyncRequest();
 
 	Domain *TargetDomain() final {return fPtr.GetDomain();}
-	void Schedule() {TargetDomain()->Schedule(this);}
-	void Cancel() {TargetDomain()->Cancel(this);}
 
 	virtual void Do(Object *ptr) = 0;
 };

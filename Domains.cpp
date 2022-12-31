@@ -35,7 +35,7 @@ enum {
 RecursiveLock gPrintLock;
 
 template<typename... Args>
-void Trace(Args&&... args)
+static void Trace(Args&&... args)
 {
 	if (doTrace)
 		printf(std::forward<Args>(args)...);
@@ -101,10 +101,13 @@ Domain *CurrentDomain()
 Domain *CurrentRootDomain()
 {
 	Domain *curDomain = CurrentDomain();
-	if (curDomain == NULL) {
-		return curDomain;
-	}
-	return curDomain->GetRoot();
+	return (curDomain == NULL) ? NULL : curDomain->GetRoot();
+}
+
+Request *CurrentRootRequest()
+{
+	Domain *dom = CurrentDomain();
+	return (dom == NULL) ? NULL : dom->RootRequest();
 }
 
 static inline void SetDomain(Domain *d)
@@ -211,6 +214,24 @@ Domain::~Domain()
 	Assert(fQueue == NULL);
 }
 
+Request *Domain::CurrentRequest()
+{
+	AutoLock lock(fLocker);
+	return fQueue;
+}
+
+Request *Domain::RootRequest()
+{
+	AutoLock lock(fLocker);
+	return GetRootRequest(fQueue);
+}
+
+void Domain::WaitForEmptyQueue()
+{
+	AutoLock lock(fLocker);
+	while (fQueue != NULL) fEmptyQueueCV.Acquire(fLocker);
+}
+
 void Domain::Run(Request *req)
 {
 	AutoLock lock(fLocker);
@@ -231,46 +252,23 @@ void Domain::Done(Request *req, RequestFlags flag)
 	fQueue = next; if (next == NULL) fQueueEnd = NULL;
 	req->state.running = false;
 	req->state.val |= flag.val;
-	RequestFlags oldState = req->state;
-	if (oldState.done && !oldState.pending) {
+
+	if (req->state.pending) {
+		req->state.pending = false;
+		Schedule(req); // call Run
+		return;
+	}
+	if (req->state.done) {
 		req->Resolved(); req = NULL;
 	}
-	if (next == NULL) {
-		if (oldState.pending) {
-			req->state.pending = false;
-			Schedule(req); // calls Run
-		} else {
-			Trace("%p: last request\n", this);
-			fEmptyQueueCV.Release(true);
-		}
-	} else {
-		if (oldState.pending) {
-			req->state.pending = false;
-			Schedule(req);
-		}
-		Run(next);
+	if (fQueue == NULL) {
+		Trace("%p: last request\n", this);
+		fEmptyQueueCV.Release(true);
+		return;
 	}
-	Assert((fQueue != NULL && fQueueEnd != NULL) || (fQueue == NULL && fQueueEnd == NULL));
+	Run(fQueue);
 }
 
-
-Request *Domain::CurrentRequest()
-{
-	AutoLock lock(fLocker);
-	return fQueue;
-}
-
-Request *Domain::RootRequest()
-{
-	AutoLock lock(fLocker);
-	return GetRootRequest(fQueue);
-}
-
-void Domain::WaitForEmptyQueue()
-{
-	AutoLock lock(fLocker);
-	while (fQueue != NULL) fEmptyQueueCV.Acquire(fLocker);
-}
 
 void Domain::Schedule(Request *req)
 {
@@ -293,9 +291,8 @@ void Domain::Schedule(Request *req)
 	else
 		fQueueEnd->next = req;
 	fQueueEnd = req;
-	Assert((fQueue != NULL && fQueueEnd != NULL) || (fQueue == NULL && fQueueEnd == NULL));
-	if (req == fQueue)
-		Run(req);
+	if (!fQueue->state.running)
+		Run(fQueue);
 }
 
 void Domain::Cancel(Request *req, RequestFlags flag)
@@ -369,6 +366,11 @@ void Domain::BeginSync()
 			req->nextSub = rootReq->nextSub; rootReq->nextSub = req;
 		}
 		//Trace("BeginSync: "); WriteSubrequests(req->fRoot);
+		if (fQueue == NULL) {
+			fQueue = req; fQueueEnd = req;
+			req->state.running = true;
+			return;
+		}
 		Schedule(req);
 	}
 	req->fSem.Acquire();

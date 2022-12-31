@@ -72,8 +72,7 @@ public:
 
 int main()
 {
-	BReference<Domain> mainDom(new Domain(), true);
-	DomainSection sect(mainDom);
+	LockedPtr<Object> mainObjLocked = MakeExternal<Object>().Switch();
 
 	auto p1 = MakeExternal<TestObject>();
 	auto p2 = MakeExternal<TestObject>();

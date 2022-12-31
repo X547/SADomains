@@ -2,6 +2,9 @@ project('SADomains', 'cpp', version: '1.0')
 
 compiler = meson.get_compiler('cpp')
 
+add_project_arguments('-Wno-pedantic', language: 'cpp')
+add_project_arguments('-Wno-missing-field-initializers', language: 'cpp')
+
 LocksProj = subproject('Locks')
 Locks = LocksProj.get_variable('Locks')
 
